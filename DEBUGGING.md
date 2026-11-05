@@ -138,7 +138,34 @@ adb shell service call netpolicy 3 i32 $U i32 262144 # removeUidPolicy(uid, REJE
 `INetworkPolicyManager` on Android 15. Check them with the read-only `4` call first on other
 versions.)
 
-## 8. Layout logic tests
+## 8. "The remote doesn't move anything" (frozen picture)
+
+If the home screen looks dead but the app hasn't crashed, check whether it's actually drawing:
+
+```sh
+adb shell dumpsys gfxinfo com.barrettcoats.waffle | grep "Total frames"   # run twice with a D-pad press between
+adb shell dumpsys activity top | grep mLastPerformDrawFailedReason          # screen_off = this bug
+```
+
+A flat frame count plus `screen_off` means the window thinks the display is off. Focus still
+moves (`uiautomator dump` shows it), but nothing reaches the screen. `adb shell am force-stop
+com.barrettcoats.waffle` and then Home recovers it.
+
+**Why it happens:** Android 15 holds back display notices for apps it considers cached (a
+launcher sitting behind another app is one) and delivers them when the app comes forward. If the
+Shield is put to sleep with the power button while our screensaver is showing, the app hears
+"display off" right away (the screensaver makes the whole app foreground), but the "display on"
+at wake is held back and never arrives. Moving the screensaver to its own process doesn't help:
+Android decides per app (uid), not per process. Letting the Shield sleep on its timer doesn't
+trigger it.
+
+To reproduce: choose Waffle's screensaver, set `screen_off_timeout` to 30000 and `sleep_timeout`
+to 90000, open another app, wait for the screensaver, press power, wait a minute, then wake and
+press Home. `MainActivity` now notices a resume that doesn't draw while the screen is on and
+restarts itself in a new window (logged as `Home screen is stuck not drawing`).
+`recreate()` isn't enough, because it keeps the same stuck window.
+
+## 9. Layout logic tests
 
 The layout operations (moving between rows and sections, resizing, sizing new tiles) are pure
 functions in `data/LayoutOps.kt`, with unit tests that run on your computer. No TV is needed:
@@ -149,7 +176,7 @@ functions in `data/LayoutOps.kt`, with unit tests that run on your computer. No 
 
 Add a test there for any layout bug before fixing it.
 
-## 9. Driving the TV from a script
+## 10. Driving the TV from a script
 
 `adb shell input keyevent KEYCODE_DPAD_…` works, but check what's focused before sending OK
 (`adb shell uiautomator dump` lists focused elements by name). A blind sequence can land
