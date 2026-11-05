@@ -1,0 +1,29 @@
+<!-- A golden waffle: rounded square, 3x3 grid of pockets, and a pat of butter. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="48dp" android:height="48dp"
+    android:viewportWidth="48" android:viewportHeight="48">
+    <path android:pathData="M10,2h28a8,8 0,0 1,8 8v28a8,8 0,0 1,-8 8h-28a8,8 0,0 1,-8 -8v-28a8,8 0,0 1,8 -8z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="linear" android:startX="0" android:startY="2"
+                android:endX="0" android:endY="46">
+                <item android:offset="0" android:color="#FFF2B450" />
+                <item android:offset="1" android:color="#FFD98A2B" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- pockets: an even 3x3 grid -->
+    <path android:fillColor="#FFB86A1C" android:pathData="M9.00,7.00h5.33a2,2 0,0 1,2,2v5.33a2,2 0,0 1,-2,2h-5.33a2,2 0,0 1,-2,-2v-5.33a2,2 0,0 1,2,-2z" />
+    <path android:fillColor="#FFB86A1C" android:pathData="M21.33,7.00h5.33a2,2 0,0 1,2,2v5.33a2,2 0,0 1,-2,2h-5.33a2,2 0,0 1,-2,-2v-5.33a2,2 0,0 1,2,-2z" />
+    <path android:fillColor="#FFB86A1C" android:pathData="M33.67,7.00h5.33a2,2 0,0 1,2,2v5.33a2,2 0,0 1,-2,2h-5.33a2,2 0,0 1,-2,-2v-5.33a2,2 0,0 1,2,-2z" />
+    <path android:fillColor="#FFB86A1C" android:pathData="M9.00,19.33h5.33a2,2 0,0 1,2,2v5.33a2,2 0,0 1,-2,2h-5.33a2,2 0,0 1,-2,-2v-5.33a2,2 0,0 1,2,-2z" />
+    <path android:fillColor="#FFB86A1C" android:pathData="M21.33,19.33h5.33a2,2 0,0 1,2,2v5.33a2,2 0,0 1,-2,2h-5.33a2,2 0,0 1,-2,-2v-5.33a2,2 0,0 1,2,-2z" />
+    <path android:fillColor="#FFB86A1C" android:pathData="M33.67,19.33h5.33a2,2 0,0 1,2,2v5.33a2,2 0,0 1,-2,2h-5.33a2,2 0,0 1,-2,-2v-5.33a2,2 0,0 1,2,-2z" />
+    <path android:fillColor="#FFB86A1C" android:pathData="M9.00,31.67h5.33a2,2 0,0 1,2,2v5.33a2,2 0,0 1,-2,2h-5.33a2,2 0,0 1,-2,-2v-5.33a2,2 0,0 1,2,-2z" />
+    <path android:fillColor="#FFB86A1C" android:pathData="M21.33,31.67h5.33a2,2 0,0 1,2,2v5.33a2,2 0,0 1,-2,2h-5.33a2,2 0,0 1,-2,-2v-5.33a2,2 0,0 1,2,-2z" />
+    <path android:fillColor="#FFB86A1C" android:pathData="M33.67,31.67h5.33a2,2 0,0 1,2,2v5.33a2,2 0,0 1,-2,2h-5.33a2,2 0,0 1,-2,-2v-5.33a2,2 0,0 1,2,-2z" />
+    <!-- butter -->
+    <path android:fillColor="#FFE9A940" android:pathData="M19,18.5h10a2.5,2.5 0,0 1,2.5 2.5v6a2.5,2.5 0,0 1,-2.5 2.5h-10a2.5,2.5 0,0 1,-2.5 -2.5v-6a2.5,2.5 0,0 1,2.5 -2.5z" />
+    <path android:fillColor="#FFFFF0B8" android:pathData="M19,17.5h10a2.5,2.5 0,0 1,2.5 2.5v6a2.5,2.5 0,0 1,-2.5 2.5h-10a2.5,2.5 0,0 1,-2.5 -2.5v-6a2.5,2.5 0,0 1,2.5 -2.5z" />
+    <path android:fillColor="#FFFFFFFF" android:fillAlpha="0.7" android:pathData="M19.5,19h4v1.5h-4z" />
+</vector>
