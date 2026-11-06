@@ -306,15 +306,17 @@ fun LauncherScreen(vm: LauncherViewModel) {
         Box(
             Modifier
                 .fillMaxSize()
-                // On the home screen, the remote's skip buttons change the picture (unless music is
-                // playing, in which case they stay with the music). Not while a tile is being edited.
+                // On the home screen, the remote's skip buttons change the picture, unless that's
+                // turned off in Settings → Wallpaper. Not while a tile is being edited. (They used to
+                // pass through while AudioManager.isMusicActive, but its count can leak and stay
+                // "active" for hours with nothing playing.)
                 .onPreviewKeyEvent { event ->
                     val forward = when (event.key) {
                         Key.MediaFastForward, Key.MediaNext, Key.MediaSkipForward -> true
                         Key.MediaRewind, Key.MediaPrevious, Key.MediaSkipBackward -> false
                         else -> return@onPreviewKeyEvent false
                     }
-                    if (active != null || vm.isMusicPlaying()) return@onPreviewKeyEvent false
+                    if (!config.remoteSkipsPicture || active != null) return@onPreviewKeyEvent false
                     if (event.type == KeyEventType.KeyDown && event.nativeKeyEvent.repeatCount == 0) skipPicture(forward)
                     true
                 },
@@ -475,7 +477,8 @@ fun LauncherScreen(vm: LauncherViewModel) {
                     subtitle = when {
                         photoCount == 0 -> "No photos yet, so the home screen shows a sky gradient."
                         photoCount == 1 -> "1 photo"
-                        else -> "$photoCount photos  ·  Fast-forward ⏩ on the remote shows the next one"
+                        config.remoteSkipsPicture -> "$photoCount photos  ·  Fast-forward ⏩ on the remote shows the next one"
+                        else -> "$photoCount photos"
                     },
                     items = listOfNotNull(
                         if (photoCount > 1) {
@@ -498,6 +501,9 @@ fun LauncherScreen(vm: LauncherViewModel) {
                         },
                         MenuItem("Order", value = if (config.wallpaperShuffle) "Shuffle" else "By Name", keepOpen = true) {
                             vm.updateSettings { it.copy(wallpaperShuffle = !it.wallpaperShuffle) }
+                        },
+                        MenuItem("Fast-Forward ⏩ Changes Picture", value = if (config.remoteSkipsPicture) "On" else "Off", keepOpen = true) {
+                            vm.updateSettings { it.copy(remoteSkipsPicture = !it.remoteSkipsPicture) }
                         },
                         MenuItem("Change Picture Every", value = interval, submenu = true) {
                             overlay = Overlay.Choice(

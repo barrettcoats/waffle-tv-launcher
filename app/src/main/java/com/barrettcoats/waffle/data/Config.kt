@@ -47,6 +47,8 @@ data class LauncherConfig(
     val wallpaperIntervalSeconds: Int = 600,
     /** Pick wallpapers in random order instead of by file name. */
     val wallpaperShuffle: Boolean = false,
+    /** On the home screen, fast-forward / rewind on the remote show the next / previous picture. */
+    val remoteSkipsPicture: Boolean = true,
     /** App names under every tile (icon-only tiles always show theirs). */
     val showAppNames: Boolean = false,
     /** Section names are always shown while editing; this controls the normal home screen. */

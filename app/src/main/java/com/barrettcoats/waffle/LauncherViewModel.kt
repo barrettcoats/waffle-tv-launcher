@@ -335,11 +335,6 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         return true
     }
 
-    /** True while something is playing audio, so media keys should keep controlling it. */
-    fun isMusicPlaying(): Boolean = runCatching {
-        getApplication<Application>().getSystemService(android.media.AudioManager::class.java).isMusicActive
-    }.getOrDefault(false)
-
     private suspend fun showWallpaper(next: File, count: Int) {
         val metrics = getApplication<Application>().resources.displayMetrics
         val bitmap = withContext(Dispatchers.IO) {

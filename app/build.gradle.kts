@@ -36,8 +36,8 @@ android {
         applicationId = "com.barrettcoats.waffle"
         minSdk = 28
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.1.4"
+        versionCode = 6
+        versionName = "0.1.5"
         buildConfigField("String", "GIT_COMMIT", "\"$gitCommit\"")
     }
 

@@ -25,8 +25,8 @@ screen is just your apps, the time and your photos.
   current conditions plus a six-day forecast.
 - **Your photos as the wallpaper.** They crossfade every few minutes (or in shuffle). Not
   feeling this one? Press **fast-forward ⏩** on the remote for the next picture, or **rewind ⏪**
-  to go back. (If music is playing, those buttons keep controlling the music.) Add them
-  from your phone: the TV shows a QR code, you scan it, pick photos, and they appear on the TV.
+  to go back (you can turn this off in Settings → Wallpaper). Add them from your phone: the TV
+  shows a QR code, you scan it, pick photos, and they appear on the TV.
 - **Photos for the time of day.** Mark photos as Morning, Day, Evening or Night (on the TV, or
   with chips on the phone page) and they show only then. Times follow the real sunrise and sunset
   for your weather location, worked out on the TV with no extra service. Unmarked photos fill in
