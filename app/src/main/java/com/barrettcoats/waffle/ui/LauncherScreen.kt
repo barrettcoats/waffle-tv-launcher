@@ -83,6 +83,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import com.barrettcoats.waffle.Log
 import com.barrettcoats.waffle.data.AppInfo
 import com.barrettcoats.waffle.data.TemperatureUnit
+import com.barrettcoats.waffle.data.DayPart
+import com.barrettcoats.waffle.data.WeatherPlace
+import com.barrettcoats.waffle.data.describe
+import com.barrettcoats.waffle.data.sunTimes
 import com.barrettcoats.waffle.data.resolve
 import com.barrettcoats.waffle.data.MoveDirection
 import com.barrettcoats.waffle.data.RowAlign
@@ -108,6 +112,11 @@ private sealed interface Overlay {
     /** [sectionId] null means a new section; [moveTileId] is moved into a new section once it's made. */
     data class NameSection(val sectionId: String?, val current: String, val moveTileId: String? = null) : Overlay
     data object WallpaperSettings : Overlay
+    data object TimesOfDay : Overlay
+    /** Every photo with when it shows; [focusName] is the photo to start on. */
+    data class PhotoTimesGrid(val focusName: String? = null) : Overlay
+    /** Morning / Day / Evening / Night checklist for one photo. */
+    data class PhotoTimeChoice(val name: String) : Overlay
     data object Appearance : Overlay
     data object About : Overlay
     data object Diagnostics : Overlay
@@ -124,6 +133,24 @@ private sealed interface Overlay {
     data class CrashReport(val text: String) : Overlay
     /** A list of options with the current one checked; Back returns to [parent]. */
     data class Choice(val title: String, val items: List<MenuItem>, val parent: Overlay) : Overlay
+}
+
+/** "It's evening in Portland · Sunrise 6:56 AM · Sunset 4:51 PM", or how the clock is used instead. */
+private fun timesOfDaySubtitle(place: WeatherPlace?, now: DayPart, context: android.content.Context): String {
+    val it = "It's ${now.label.lowercase()}"
+    if (place == null) {
+        return "$it by the clock (morning 6–10, day 10–5, evening 5–7, night). " +
+            "Set your location to follow sunrise and sunset."
+    }
+    val day = sunTimes(place, java.time.LocalDate.now())
+    val format = android.text.format.DateFormat.getTimeFormat(context)
+    val sun = when {
+        day.sunrise != null && day.sunset != null ->
+            "Sunrise ${format.format(java.util.Date(day.sunrise))}  ·  Sunset ${format.format(java.util.Date(day.sunset))}"
+        day.alwaysUp -> "The sun stays up all day today"
+        else -> "The sun stays down all day today"
+    }
+    return "$it in ${place.name}  ·  $sun"
 }
 
 private val CORNER_CHOICES = listOf(
@@ -225,24 +252,32 @@ fun LauncherScreen(vm: LauncherViewModel) {
 
     // Android's "make this your home app?" confirmation; re-check afterwards.
     var isHome by remember { mutableStateOf(true) }
-    val homeRequest = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+    var homeLabel by remember { mutableStateOf("") }
+    fun refreshHome() {
         isHome = vm.isDefaultHome()
+        homeLabel = vm.homeAppLabel()
+    }
+    val homeRequest = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        refreshHome()
         Log.i("Home app request finished; default home now ${if (isHome) "this launcher" else vm.homeAppPackage()}")
     }
-    fun askToBeHome() {
+    fun launchHomeIntent(intent: android.content.Intent) {
         try {
-            homeRequest.launch(vm.homeRequestIntent())
+            homeRequest.launch(intent)
         } catch (e: Exception) {
-            Log.w("No way to ask for the home role here: ${e.message}")
+            Log.w("Couldn't open ${intent.action}: ${e.message}")
             vm.openSystemSettings(context)
         }
     }
+    fun askToBeHome() = launchHomeIntent(vm.homeRequestIntent())
+    // Already home: Android's own chooser, so the Home button can be given to another launcher.
+    fun chooseHomeApp() = if (isHome) launchHomeIntent(vm.homeChooserIntent()) else askToBeHome()
 
     LaunchedEffect(ready) {
         if (ready && !initialFocusDone) {
             focusTileId = firstTileId()
             initialFocusDone = true
-            isHome = vm.isDefaultHome()
+            refreshHome()
             // Out of the box, opened from another launcher: offer to take over the Home button.
             if (!isHome && !vm.config.value.homePromptDismissed) overlay = Overlay.MakeDefaultHome
         }
@@ -288,7 +323,7 @@ fun LauncherScreen(vm: LauncherViewModel) {
             Column(Modifier.fillMaxSize()) {
                 TopBar(
                     editing = editing,
-                    onSettings = { overlay = Overlay.Settings },
+                    onSettings = { refreshHome(); overlay = Overlay.Settings },
                     onNetwork = { vm.openWifiSettings(context) },
                     weather = if (!config.weatherEnabled) null else {
                         {
@@ -399,6 +434,7 @@ fun LauncherScreen(vm: LauncherViewModel) {
                         overlay = Overlay.WeatherSettings
                     },
                     MenuItem("Appearance", submenu = true) { overlay = Overlay.Appearance },
+                    MenuItem("Home App", value = homeLabel, submenu = true) { chooseHomeApp() },
                     MenuItem("Android Settings") { vm.openSystemSettings(context) },
                     MenuItem("About") { overlay = Overlay.About },
                 ),
@@ -474,10 +510,74 @@ fun LauncherScreen(vm: LauncherViewModel) {
                                 parent = Overlay.WallpaperSettings,
                             )
                         },
+                        if (photoCount > 0) {
+                            MenuItem("Times of Day", value = vm.dayPart().label, submenu = true) { overlay = Overlay.TimesOfDay }
+                        } else {
+                            null
+                        },
                         MenuItem("Use as Screensaver", submenu = true) { overlay = Overlay.ScreensaverHelp },
                         if (photoCount > 0) MenuItem("Remove All Photos") { overlay = Overlay.ConfirmRemovePhotos } else null,
                     ),
                     onDismiss = { overlay = Overlay.Settings },
+                )
+            }
+            Overlay.TimesOfDay -> {
+                val now = vm.dayPart()
+                val photos = remember(overlay) { vm.wallpaperFiles() }
+                MenuDialog(
+                    title = "Times of Day",
+                    subtitle = timesOfDaySubtitle(config.weatherPlace, now, context),
+                    items = buildList {
+                        add(MenuItem("Choose Photos for Each Time", submenu = true) { overlay = Overlay.PhotoTimesGrid() })
+                        DayPart.entries.forEach { part ->
+                            val n = photos.count { part in config.photoTimes[it.name]?.parts.orEmpty() }
+                            add(
+                                MenuItem(
+                                    if (part == now) "${part.label}  ·  now" else part.label,
+                                    value = when (n) {
+                                        0 -> "Any-time photos"
+                                        1 -> "1 photo"
+                                        else -> "$n photos"
+                                    },
+                                    keepOpen = true,
+                                ) { overlay = Overlay.PhotoTimesGrid() },
+                            )
+                        }
+                        if (config.weatherPlace == null) {
+                            add(MenuItem("Set Your Location", submenu = true) { overlay = Overlay.WeatherSearch })
+                        }
+                    },
+                    onDismiss = { overlay = Overlay.WallpaperSettings },
+                )
+            }
+            is Overlay.PhotoTimesGrid -> {
+                val photos = remember(overlay) { vm.wallpaperFiles() }
+                PhotoGridDialog(
+                    title = "Choose Photos for Each Time",
+                    subtitle = "Pick a photo to choose when it shows. Photos on Any time fill in whenever no photo is set for that time.",
+                    photos = photos,
+                    labelOf = { config.photoTimes[it.name].describe() },
+                    thumbnail = { vm.wallpaperThumbnail(it) },
+                    focus = photos.firstOrNull { it.name == o.focusName },
+                    onPick = { overlay = Overlay.PhotoTimeChoice(it.name) },
+                    onDismiss = { overlay = Overlay.TimesOfDay },
+                )
+            }
+            is Overlay.PhotoTimeChoice -> {
+                val parts = config.photoTimes[o.name]?.parts.orEmpty()
+                MenuDialog(
+                    title = "When to Show This Photo",
+                    subtitle = "Pick one or more. It's ${vm.dayPart().label.lowercase()} now.",
+                    items = buildList {
+                        add(MenuItem("Any Time", checked = parts.isEmpty(), keepOpen = true) { vm.setPhotoTimes(o.name, emptySet()) })
+                        DayPart.entries.forEach { part ->
+                            add(MenuItem(part.label, checked = part in parts, keepOpen = true) {
+                                vm.setPhotoTimes(o.name, if (part in parts) parts - part else parts + part)
+                            })
+                        }
+                        add(MenuItem("Done") { })
+                    },
+                    onDismiss = { overlay = Overlay.PhotoTimesGrid(o.name) },
                 )
             }
             Overlay.PhotoUpload -> {

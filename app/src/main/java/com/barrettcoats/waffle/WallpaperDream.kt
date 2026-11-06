@@ -22,6 +22,11 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import com.barrettcoats.waffle.data.ConfigStore
+import com.barrettcoats.waffle.data.DayPart
+import com.barrettcoats.waffle.data.LauncherConfig
+import com.barrettcoats.waffle.data.dayPartNow
+import com.barrettcoats.waffle.data.wallpaperPool
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -175,11 +180,19 @@ class SlideshowView(context: android.content.Context) : FrameLayout(context) {
     private suspend fun slideshowLoop() {
         val source = WallpaperSource(context)
         val metrics = resources.displayMetrics
+        // The launcher's saved settings, for which photos belong to which time of day.
+        val store = ConfigStore(java.io.File(context.filesDir, "config.json"))
         var order = emptyList<java.io.File>()
+        var orderPart: DayPart? = null
         var i = 0
         while (true) {
-            if (i >= order.size) {
-                order = withContext(Dispatchers.IO) { source.list() }.shuffled()
+            val config = withContext(Dispatchers.IO) { store.load() } ?: LauncherConfig()
+            val part = dayPartNow(config.weatherPlace)
+            // A new round of photos when this one runs out, or when it turns morning, evening...
+            if (i >= order.size || part != orderPart) {
+                val files = withContext(Dispatchers.IO) { source.list() }
+                order = wallpaperPool(files, config.photoTimes, part).shuffled()
+                orderPart = part
                 i = 0
                 if (order.isEmpty()) {
                     delay(60_000)

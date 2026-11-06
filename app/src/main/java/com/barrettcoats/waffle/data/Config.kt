@@ -67,8 +67,20 @@ data class LauncherConfig(
     val homePromptDismissed: Boolean = false,
     /** The "hold OK for options" tip has been acted on and no longer shows. */
     val tipSeen: Boolean = false,
+    /**
+     * When each wallpaper photo shows, keyed by file name. A photo that isn't listed (or has no
+     * parts) shows at any time.
+     */
+    val photoTimes: Map<String, PhotoSchedule> = emptyMap(),
     /** Version 1's global short-row side. Only read to migrate it to [Section.shortRows]. */
     val lastRowFill: RowFill = RowFill.LEFT,
+)
+
+/** When one wallpaper photo shows. Room to add dates (holidays, birthdays) later. */
+@Serializable
+data class PhotoSchedule(
+    /** Empty = any time. */
+    val parts: Set<DayPart> = emptySet(),
 )
 
 @Serializable

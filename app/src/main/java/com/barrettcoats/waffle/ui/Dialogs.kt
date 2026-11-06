@@ -427,3 +427,67 @@ private fun PickerCell(
 
 /** How long after a text dialog opens an all-at-once clear is taken to be the keyboard connecting. */
 private const val KEYBOARD_RESET_WINDOW_MS = 1500L
+
+/**
+ * A grid of wallpaper photos with a short label under each (Settings → Wallpaper → Times of Day).
+ * Focus starts on [focus] so coming back from one photo's options lands where you were.
+ */
+@Composable
+fun PhotoGridDialog(
+    title: String,
+    subtitle: String?,
+    photos: List<java.io.File>,
+    labelOf: (java.io.File) -> String,
+    thumbnail: suspend (java.io.File) -> androidx.compose.ui.graphics.ImageBitmap?,
+    focus: java.io.File?,
+    onPick: (java.io.File) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        val first = remember { FocusRequester() }
+        val start = photos.indexOf(focus).coerceAtLeast(0)
+        val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState(initialFirstVisibleItemIndex = start)
+        Sheet(Modifier.fillMaxWidth(0.84f).fillMaxHeight(0.86f)) {
+            SheetTitle(title, subtitle)
+            if (photos.isEmpty()) {
+                Text("No photos yet. Add some from your phone first.", color = Palette.SheetMuted)
+            }
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(220.dp),
+                state = gridState,
+                horizontalArrangement = Arrangement.spacedBy(18.dp),
+                verticalArrangement = Arrangement.spacedBy(18.dp),
+                contentPadding = PaddingValues(8.dp),
+            ) {
+                itemsIndexed(photos, key = { _, f -> f.name }) { index, file ->
+                    val thumb by androidx.compose.runtime.produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, file) {
+                        value = thumbnail(file)
+                    }
+                    Column(if (index == start) Modifier.focusRequester(first) else Modifier) {
+                        FlatSurface(
+                            onClick = { onPick(file) },
+                            modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f),
+                            containerColor = Palette.SheetItem,
+                            focusedContainerColor = Color.White.copy(alpha = 0.16f),
+                            focusedScale = 1.06f,
+                            lift = true,
+                        ) {
+                            thumb?.let {
+                                Image(it, contentDescription = file.name, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                            }
+                        }
+                        Text(
+                            labelOf(file),
+                            Modifier.padding(start = 4.dp, top = 8.dp),
+                            fontSize = 14.sp,
+                            color = Palette.SheetText,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+        }
+        if (photos.isNotEmpty()) RequestInitialFocus(first)
+    }
+}

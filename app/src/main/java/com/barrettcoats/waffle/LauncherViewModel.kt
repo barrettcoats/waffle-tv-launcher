@@ -33,6 +33,13 @@ import com.barrettcoats.waffle.data.removeTilesFor
 import com.barrettcoats.waffle.data.syncInstalled
 import com.barrettcoats.waffle.data.PhotoUploadServer
 import com.barrettcoats.waffle.data.WallpaperSource
+import com.barrettcoats.waffle.data.DayPart
+import com.barrettcoats.waffle.data.SunClock
+import com.barrettcoats.waffle.data.PhotoSchedule
+import com.barrettcoats.waffle.data.dayPartNow
+import com.barrettcoats.waffle.data.describe
+import com.barrettcoats.waffle.data.wallpaperPool
+import com.barrettcoats.waffle.data.withParts
 import fi.iki.elonen.NanoHTTPD
 import com.barrettcoats.waffle.data.RowAlign
 import com.barrettcoats.waffle.data.WeatherClient
@@ -78,6 +85,13 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     val wallpaper: StateFlow<ImageBitmap?> = _wallpaper.asStateFlow()
     private var wallpaperJob: Job? = null
     private var wallpaperWanted = false
+    /**
+     * Which picture is up and when it went up (wall-clock ms), kept on disk as well: Android
+     * often kills a launcher's process while a big app (a movie) runs, and without this every
+     * restart went back to the first picture with a fresh timer.
+     */
+    private val wallpaperState = application.getSharedPreferences("wallpaper", android.content.Context.MODE_PRIVATE)
+    private var wallpaperChangedAt = wallpaperState.getLong("changedAt", 0L)
 
     private val weatherClient = WeatherClient()
     private val _weather = MutableStateFlow<WeatherReport?>(null)
@@ -201,22 +215,55 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    /** Rotates through the wallpaper folder while the launcher is visible. */
+    /**
+     * Rotates through the wallpaper folder while the launcher is visible. The interval is real
+     * time since the picture last changed, including time spent in other apps or asleep: coming
+     * home after a full interval shows the next picture straight away, and a shorter absence
+     * only waits out what's left. (Counting only time on screen meant short, frequent visits
+     * home never saw a change.)
+     */
     fun startWallpaper() {
         wallpaperWanted = true
         if (wallpaperJob?.isActive == true) return
         wallpaperJob = viewModelScope.launch {
             // The interval lives in the saved config, which may still be loading on first start.
             _ready.first { it }
-            // Coming back home keeps the current picture unless it was deleted meanwhile.
-            if (wallpaperFile?.exists() != true) showNextWallpaper()
+            if (wallpaperFile?.exists() != true && !restoreWallpaper()) showNextWallpaper()
             while (true) {
+                // The picture up may not belong to this part of the day (it just turned evening,
+                // or its times were changed): move on to one that does, without waiting.
+                if (!currentFitsNow()) {
+                    showNextWallpaper()
+                    markWallpaperChanged()
+                }
                 val seconds = _config.value.wallpaperIntervalSeconds
-                if (seconds <= 0) break // "never": keep the current picture
-                delay(seconds.coerceAtLeast(5) * 1000L)
+                // "Never" keeps the picture, but still follows the time of day.
+                val intervalMs = if (seconds <= 0) Long.MAX_VALUE else seconds.coerceAtLeast(5) * 1000L
+                // Negative means the clock was set back; treat that as due rather than wait.
+                val sinceChange = System.currentTimeMillis() - wallpaperChangedAt
+                if (sinceChange in 0 until intervalMs) {
+                    // Wake at least every minute to notice the time of day changing.
+                    delay(minOf(intervalMs - sinceChange, 60_000L))
+                    continue
+                }
                 showNextWallpaper()
+                // Also when nothing changed (one photo, or it wouldn't decode), so we wait again.
+                markWallpaperChanged()
             }
         }
+    }
+
+    /** Morning, day, evening or night right now where the TV is (clock hours without a place). */
+    fun dayPart(): DayPart = dayPartNow(_config.value.weatherPlace)
+
+    /** The photos that may show right now (see [wallpaperPool]). */
+    private fun wallpaperPoolNow(files: List<File>): List<File> =
+        wallpaperPool(files, _config.value.photoTimes, dayPart())
+
+    private suspend fun currentFitsNow(): Boolean {
+        val current = wallpaperFile ?: return true
+        val files = withContext(Dispatchers.IO) { wallpapers.list() }
+        return current in wallpaperPoolNow(files)
     }
 
     fun stopWallpaper() {
@@ -241,11 +288,14 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             return
         }
         val current = wallpaperFile
-        val next = if (_config.value.wallpaperShuffle && files.size > 1) {
-            files.filter { it != current }.random()
+        val pool = wallpaperPoolNow(files)
+        val next = if (_config.value.wallpaperShuffle && pool.size > 1) {
+            pool.filter { it != current }.random()
         } else {
             // The one after the current picture in name order (the first if there's none yet).
-            files[(files.indexOf(current) + 1) % files.size]
+            // Found by name, since the current one may not be in this part of the day's photos.
+            val after = current?.name?.lowercase()
+            pool.firstOrNull { after != null && it.name.lowercase() > after } ?: pool.first()
         }
         if (next == current && _wallpaper.value != null) return
         if (current != null) {
@@ -257,13 +307,17 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     private suspend fun showPreviousWallpaper() {
         val files = withContext(Dispatchers.IO) { wallpapers.list() }
+        val pool = wallpaperPoolNow(files)
         val current = wallpaperFile
         while (wallpaperHistory.isNotEmpty()) {
             val f = wallpaperHistory.removeLast()
-            if (f != current && f.exists()) return showWallpaper(f, files.size)
+            if (f != current && f in pool) return showWallpaper(f, files.size)
         }
         // Nothing remembered yet: the one before in name order.
-        if (files.size > 1) showWallpaper(files[(files.indexOf(current) - 1 + files.size) % files.size], files.size)
+        if (pool.size > 1) {
+            val before = current?.name?.lowercase()
+            showWallpaper(pool.lastOrNull { before != null && it.name.lowercase() < before } ?: pool.last(), files.size)
+        }
     }
 
     /**
@@ -271,7 +325,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
      * picked doesn't change again a moment later. Returns false when there's nothing to switch to.
      */
     fun skipWallpaper(forward: Boolean): Boolean {
-        if (wallpapers.list().size < 2) return false
+        if (wallpaperPoolNow(wallpapers.list()).size < 2) return false
         wallpaperJob?.cancel()
         viewModelScope.launch {
             if (forward) showNextWallpaper() else showPreviousWallpaper()
@@ -296,6 +350,32 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         Log.i("Wallpaper: ${next.name} ($count in folder)")
         wallpaperFile = next
         _wallpaper.value = bitmap
+        markWallpaperChanged()
+    }
+
+    private fun markWallpaperChanged(at: Long = System.currentTimeMillis()) {
+        wallpaperChangedAt = at
+        wallpaperState.edit().putString("file", wallpaperFile?.name).putLong("changedAt", at).apply()
+    }
+
+    /** After a process restart, put back the picture that was up (keeping its timer). */
+    private suspend fun restoreWallpaper(): Boolean {
+        val name = wallpaperState.getString("file", null) ?: return false
+        val files = withContext(Dispatchers.IO) { wallpapers.list() }
+        val file = files.firstOrNull { it.name == name } ?: return false
+        val changedAt = wallpaperChangedAt
+        val intervalMs = _config.value.wallpaperIntervalSeconds * 1000L
+        if (intervalMs > 0 && System.currentTimeMillis() - changedAt !in 0 until intervalMs) {
+            // Overdue: don't load it just to replace it; the next one follows it in order.
+            wallpaperFile = file
+            Log.i("Wallpaper ${file.name} was due to change while we were gone")
+            return true
+        }
+        showWallpaper(file, files.size)
+        if (wallpaperFile != file) return false
+        markWallpaperChanged(changedAt)
+        Log.i("Wallpaper restored after restart; up for ${(System.currentTimeMillis() - changedAt) / 60_000} min")
+        return true
     }
 
     private fun refreshApps() {
@@ -427,15 +507,24 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 port = port,
                 folder = folder,
                 code = code,
-                onAdded = { file ->
+                onAdded = { file, parts ->
                     viewModelScope.launch {
+                        if (parts.isNotEmpty()) setPhotoTimes(file.name, parts)
                         _upload.value = _upload.value?.let { it.copy(received = it.received + 1) }
-                        showWallpaper(file, wallpapers.list().size) // show it straight away
+                        // Show it straight away, if it belongs to this part of the day.
+                        val files = wallpapers.list()
+                        if (file in wallpaperPoolNow(files)) showWallpaper(file, files.size)
                     }
                 },
-                onRemoved = {
-                    viewModelScope.launch { if (wallpaperFile?.exists() != true) showNextWallpaper() }
+                onRemoved = { name ->
+                    viewModelScope.launch {
+                        setPhotoTimes(name, emptySet())
+                        if (wallpaperFile?.exists() != true) showNextWallpaper()
+                    }
                 },
+                timesOf = { name -> _config.value.photoTimes[name]?.parts.orEmpty() },
+                onTimesChanged = { name, parts -> viewModelScope.launch { setPhotoTimes(name, parts) } },
+                currentPart = { dayPart() },
             )
             try {
                 server.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
@@ -468,6 +557,25 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     fun wallpaperCount(): Int = wallpapers.list().size
 
+    /** Every wallpaper photo, in name order (for the Times of Day photo grid). */
+    fun wallpaperFiles(): List<File> = wallpapers.list()
+
+    /** A small decoded copy of [file] for the photo grid. */
+    suspend fun wallpaperThumbnail(file: File): ImageBitmap? = withContext(Dispatchers.IO) {
+        runCatching { wallpapers.decode(file, 320, 180) }.getOrNull()
+    }
+
+    /**
+     * Sets when [name] shows (empty = any time). If that takes the picture on screen out of the
+     * current part of the day, the rotation moves on within a minute; we nudge it right away.
+     */
+    fun setPhotoTimes(name: String, parts: Set<DayPart>) {
+        if (_config.value.photoTimes[name]?.parts.orEmpty() == parts) return
+        edit { it.copy(photoTimes = it.photoTimes.withParts(name, parts)) }
+        Log.i("Photo times: $name -> ${PhotoSchedule(parts).describe()}")
+        restartWallpaper()
+    }
+
     fun isOurScreensaver(): Boolean = runCatching {
         val app = getApplication<Application>()
         Settings.Secure.getString(app.contentResolver, "screensaver_components")
@@ -491,6 +599,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     fun removeAllWallpapers() {
         viewModelScope.launch {
             withContext(Dispatchers.IO) { wallpapers.list().forEach { it.delete() } }
+            edit { it.copy(photoTimes = emptyMap()) }
             Log.i("Removed all wallpapers")
             showNextWallpaper()
         }
@@ -522,6 +631,22 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         return Intent(Settings.ACTION_HOME_SETTINGS)
     }
 
+    /** The full home-app chooser, for switching away from us (Android's Default home app screen). */
+    fun homeChooserIntent(): Intent = Intent(Settings.ACTION_HOME_SETTINGS)
+
+    /** Name of the app the Home button opens, for Settings → Home App. */
+    fun homeAppLabel(): String {
+        val app = getApplication<Application>()
+        return when (val home = homeAppPackage()) {
+            app.packageName -> "Waffle"
+            null -> "Unknown"
+            "android" -> "Not chosen"
+            else -> _installed.value[home]?.label ?: runCatching {
+                app.packageManager.getApplicationLabel(app.packageManager.getApplicationInfo(home, 0)).toString()
+            }.getOrDefault(home)
+        }
+    }
+
     /** Label/value rows for Settings → About → Diagnostics. */
     fun diagnostics(): List<Pair<String, String>> {
         val app = getApplication<Application>()
@@ -541,8 +666,16 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             "Apps Found" to "${_installed.value.size} (${_installed.value.values.count { it.isTv }} TV)",
             "Layout" to "${c.sections.size} sections, ${c.sections.sumOf { it.tiles.size }} tiles",
             "Wallpapers" to "${wallpapers.list().size} in folder",
+            "Time of Day" to timeOfDayDiagnostic(c.weatherPlace),
             "Internet Access" to if (internetBlockedForUs()) "Blocked by Android" else "Allowed",
         )
+    }
+
+    private fun timeOfDayDiagnostic(place: WeatherPlace?): String {
+        val part = dayPart().label
+        if (place == null) return "$part (clock hours; no location)"
+        val sun = SunClock.elevation(System.currentTimeMillis(), place.latitude, place.longitude)
+        return "$part (sun ${"%.1f".format(sun)}°, ${place.name})"
     }
 
     fun lastCrash(): String? = LauncherApp.crashFile(getApplication()).takeIf { it.exists() }?.readText()

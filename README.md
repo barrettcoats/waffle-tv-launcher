@@ -27,6 +27,10 @@ screen is just your apps, the time and your photos.
   feeling this one? Press **fast-forward ⏩** on the remote for the next picture, or **rewind ⏪**
   to go back. (If music is playing, those buttons keep controlling the music.) Add them
   from your phone: the TV shows a QR code, you scan it, pick photos, and they appear on the TV.
+- **Photos for the time of day.** Mark photos as Morning, Day, Evening or Night (on the TV, or
+  with chips on the phone page) and they show only then. Times follow the real sunrise and sunset
+  for your weather location, worked out on the TV with no extra service. Unmarked photos fill in
+  whenever no photo is set for that time.
 - **A matching screensaver.** The same photos as a slow slideshow with the time, and a clock that
   moves now and then so nothing burns in.
 - **Comfortable for everyone.** Large text, the Inter typeface, a soft focus "lift", plain
@@ -71,6 +75,8 @@ release (or the other way round) without uninstalling first, which clears your l
    sky gradient is shown.
 3. **Arrange:** hold OK on any app, or Settings → **Edit Home Screen**.
 4. **Screensaver (optional):** Settings → Wallpaper → **Use as Screensaver**.
+5. **Times of day (optional):** Settings → Wallpaper → **Times of Day**. Without a weather
+   location it uses plain clock hours.
 
 If weather or phone uploads say *Internet Access Is Off*, the TV is blocking network access for
 the launcher. That's a privacy default on LineageOS. Turn on **Network access** in the app's
@@ -93,6 +99,7 @@ private storage.
 - `data/LayoutOps.kt`: layout edits as pure functions, unit-tested
   (`./gradlew testDebugUnitTest`)
 - `data/Weather.kt`, `data/PhotoUploadServer.kt`, `data/Wallpapers.kt`
+- `data/SunClock.kt` (sun position → morning/day/evening/night), `data/WallpaperPool.kt`
 - `ui/LauncherScreen.kt` (home screen and menus), `ui/TileGrid.kt` (centered column grid)
 - `WallpaperDream.kt` (screensaver)
 

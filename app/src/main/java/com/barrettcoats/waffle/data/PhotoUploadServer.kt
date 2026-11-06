@@ -16,8 +16,14 @@ class PhotoUploadServer(
     port: Int,
     private val folder: File,
     private val code: String,
-    private val onAdded: (File) -> Unit,
-    private val onRemoved: () -> Unit,
+    /** A photo was saved, with the times picked on the upload form (empty = any time). */
+    private val onAdded: (File, Set<DayPart>) -> Unit,
+    /** A photo was deleted (by file name). */
+    private val onRemoved: (String) -> Unit,
+    /** When a photo shows now (empty = any time). Called on the server's thread. */
+    private val timesOf: (String) -> Set<DayPart>,
+    private val onTimesChanged: (String, Set<DayPart>) -> Unit,
+    private val currentPart: () -> DayPart,
 ) : NanoHTTPD(port) {
 
     override fun serve(session: IHTTPSession): Response = try {
@@ -43,6 +49,7 @@ class PhotoUploadServer(
         return when {
             session.uri == "/upload" && session.method == Method.POST -> upload(params, files)
             session.uri == "/delete" && session.method == Method.POST -> delete(params["name"]?.firstOrNull())
+            session.uri == "/times" && session.method == Method.POST -> times(params)
             session.uri.startsWith("/photo/") -> photo(session.uri.removePrefix("/photo/"))
             else -> home(added = params["added"]?.firstOrNull()?.toIntOrNull(), skipped = params["skipped"]?.firstOrNull()?.toIntOrNull())
         }
@@ -59,6 +66,7 @@ class PhotoUploadServer(
             .filter { it.matches(Regex("photos\\d*")) }
             .sortedBy { it.removePrefix("photos").toIntOrNull() ?: 0 }
         Log.i("Upload: ${parts.size} file part(s), ${names.size} name(s)")
+        val times = partsFrom(params)
         var added = 0
         var skipped = 0
         parts.forEachIndexed { i, key ->
@@ -71,7 +79,7 @@ class PhotoUploadServer(
             temp.copyTo(target)
             added++
             Log.i("Received wallpaper ${target.name} (${target.length() / 1024} KB)")
-            onAdded(target)
+            onAdded(target, times)
         }
         return redirect("/?code=$code&added=$added&skipped=$skipped")
     }
@@ -81,10 +89,30 @@ class PhotoUploadServer(
         if (file != null && file.exists()) {
             file.delete()
             Log.i("Deleted wallpaper ${file.name}")
-            onRemoved()
+            onRemoved(file.name)
         }
         return redirect("/?code=$code")
     }
+
+    /** Saves when one photo shows. The page sends it in the background (js=1) as chips change. */
+    private fun times(params: Map<String, List<String>>): Response {
+        val file = params["name"]?.firstOrNull()?.let { safeFile(it) }
+        if (file != null && file.exists()) onTimesChanged(file.name, partsFrom(params))
+        return if (params["js"]?.firstOrNull() == "1") {
+            newFixedLengthResponse(Response.Status.OK, "text/plain", "saved")
+        } else {
+            redirect("/?code=$code")
+        }
+    }
+
+    private fun partsFrom(params: Map<String, List<String>>): Set<DayPart> =
+        params["part"].orEmpty().mapNotNull { v -> DayPart.entries.firstOrNull { it.name == v } }.toSet()
+
+    /** Morning / Day / Evening / Night toggle chips (checkboxes named "part"). */
+    private fun chips(selected: Set<DayPart>): String =
+        DayPart.entries.joinToString("", "<div class=chips>", "</div>") { p ->
+            """<label><input type=checkbox name=part value="${p.name}"${if (p in selected) " checked" else ""}><span>${p.label}</span></label>"""
+        }
 
     private fun photo(name: String): Response {
         val file = safeFile(java.net.URLDecoder.decode(name, "UTF-8")) ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "Not found")
@@ -106,11 +134,17 @@ class PhotoUploadServer(
         } else {
             photos.joinToString("", "<div class=grid>", "</div>") { f ->
                 val n = URLEncoder.encode(f.name, "UTF-8")
+                val parts = timesOf(f.name)
                 """<figure><img loading=lazy src="/photo/$n?code=$code" alt="">
+                   <form class=times method=post action="/times"><input type=hidden name=code value="$code">
+                   <input type=hidden name=name value="${esc(f.name)}">
+                   <p class=when>${if (parts.isEmpty()) "Any time" else "Only at these times"}</p>${chips(parts)}
+                   <noscript><button class=save>Save</button></noscript></form>
                    <form method=post action="/delete"><input type=hidden name=code value="$code">
                    <input type=hidden name=name value="${esc(f.name)}"><button class=del>Remove</button></form></figure>"""
             }
         }
+        val now = currentPart().label.lowercase()
         val body = """
             $notice
             <form class=card method=post action="/upload" enctype="multipart/form-data">
@@ -118,10 +152,21 @@ class PhotoUploadServer(
               <label class=pick>Choose photos<input type=file name=photos accept="image/*" multiple required
                 onchange="this.form.querySelector('button').disabled=!this.files.length;
                           this.parentNode.firstChild.textContent=this.files.length+' selected '"></label>
+              <p class=when>Show these at (leave all off for any time):</p>${chips(emptySet())}
               <button disabled>Send to TV</button>
             </form>
             <h2>On the TV (${photos.size})</h2>
+            <p class=muted>It's $now at the TV now. Photos set to a time of day only show then;
+            the rest show whenever no photo is set for that time.</p>
             $grid
+            <script>
+              document.querySelectorAll('form.times').forEach(f => f.addEventListener('change', () => {
+                const n = f.querySelectorAll('input[name=part]:checked').length;
+                f.querySelector('.when').textContent = n ? 'Only at these times' : 'Any time';
+                const body = new URLSearchParams(new FormData(f)); body.set('js', '1');
+                fetch('/times', {method: 'POST', body}).catch(() => f.submit());
+              }));
+            </script>
         """
         return page("Wallpapers", body)
     }
@@ -155,6 +200,11 @@ class PhotoUploadServer(
               figure{margin:0;background:#202024e6;border-radius:14px;overflow:hidden}
               figure img{width:100%;aspect-ratio:16/9;object-fit:cover;display:block}
               figure form{padding:8px} .del{width:100%;padding:8px;background:#ffffff26;color:#fff}
+              figure form.times{padding:8px 8px 0} .when{margin:0 0 6px;font-size:13px;opacity:.85}
+              .chips{display:flex;flex-wrap:wrap;gap:6px} .chips input{display:none}
+              .chips span{display:inline-block;padding:6px 10px;border-radius:999px;background:#ffffff1f;font-size:13px;cursor:pointer;user-select:none}
+              .chips input:checked+span{background:#fff;color:#1c1c1e;font-weight:600}
+              .save{margin-top:6px;padding:6px 12px}
             </style></head><body><main><h1>$title</h1>$body
             <p class=muted style="margin-top:32px;font-size:13px">This page only works while the TV shows its upload screen.</p>
             </main></body></html>""",
