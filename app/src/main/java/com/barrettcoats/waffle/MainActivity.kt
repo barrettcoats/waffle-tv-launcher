@@ -45,7 +45,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        viewModel.startWallpaper()
+        viewModel.startWallpaper(cameBack = true)
         viewModel.startWeather()
     }
 

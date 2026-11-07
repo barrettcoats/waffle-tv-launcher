@@ -76,6 +76,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.tv.material3.Text
 import com.barrettcoats.waffle.LauncherViewModel
+import com.barrettcoats.waffle.WallpaperFrame
 import com.barrettcoats.waffle.data.AppArt
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -477,7 +478,6 @@ fun LauncherScreen(vm: LauncherViewModel) {
                     subtitle = when {
                         photoCount == 0 -> "No photos yet, so the home screen shows a sky gradient."
                         photoCount == 1 -> "1 photo"
-                        config.remoteSkipsPicture -> "$photoCount photos  ·  Fast-forward ⏩ on the remote shows the next one"
                         else -> "$photoCount photos"
                     },
                     items = listOfNotNull(
@@ -922,13 +922,15 @@ private class WallLayer(val image: ImageBitmap?, val alpha: Animatable<Float, An
  * half-faded pictures and flashes it.) A change mid-fade just starts another layer on top.
  */
 @Composable
-private fun FadeOver(image: ImageBitmap?, durationMillis: Int = 2500) {
+private fun FadeOver(frame: WallpaperFrame) {
     val layers = remember { mutableStateListOf<WallLayer>() }
-    LaunchedEffect(image) {
+    LaunchedEffect(frame) {
+        val image = frame.image
         if (layers.lastOrNull()?.image === image && layers.isNotEmpty()) return@LaunchedEffect
-        val layer = WallLayer(image, Animatable(if (layers.isEmpty()) 1f else 0f))
+        val instant = layers.isEmpty() || frame.fadeMillis <= 0
+        val layer = WallLayer(image, Animatable(if (instant) 1f else 0f))
         layers.add(layer)
-        layer.alpha.animateTo(1f, tween(durationMillis))
+        if (!instant) layer.alpha.animateTo(1f, tween(frame.fadeMillis))
         // Fully covered now: everything underneath can go.
         while (layers.firstOrNull() !== layer) layers.removeAt(0)
     }
@@ -946,14 +948,14 @@ private fun FadeOver(image: ImageBitmap?, durationMillis: Int = 2500) {
 
 /** The photo (fading in over the last one when it changes), over a sky gradient, under soft scrims for legibility. */
 @Composable
-private fun Wallpaper(image: ImageBitmap?) {
+private fun Wallpaper(frame: WallpaperFrame) {
     Box(Modifier.fillMaxSize()) {
         Box(
             Modifier.fillMaxSize().background(
                 Brush.verticalGradient(listOf(Palette.SkyTop, Palette.SkyMiddle, Palette.SkyBottom)),
             ),
         )
-        FadeOver(image)
+        FadeOver(frame)
         // Darken the top (clock, first section title) and a touch overall, so white text stays
         // readable on bright skies without dulling the picture.
         Box(

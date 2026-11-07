@@ -80,11 +80,20 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     val ready: StateFlow<Boolean> = _ready.asStateFlow()
 
     private val wallpapers = WallpaperSource(application)
-    private val _wallpaper = MutableStateFlow<ImageBitmap?>(null)
-    /** The current wallpaper, or null to show the built-in sky gradient. */
-    val wallpaper: StateFlow<ImageBitmap?> = _wallpaper.asStateFlow()
+    private val _wallpaper = MutableStateFlow(WallpaperFrame(null, 0))
+    /** The current wallpaper and how to bring it in. */
+    val wallpaper: StateFlow<WallpaperFrame> = _wallpaper.asStateFlow()
     private var wallpaperJob: Job? = null
     private var wallpaperWanted = false
+    /**
+     * The picture to show next, decoded as the home screen goes out of sight (while the process
+     * still runs; Android freezes it soon after), so coming back to a due change can show it
+     * before the first frame instead of fading it in over the old one. [part] is the time of day
+     * it was picked for: crossing into another one on the way back means it doesn't fit.
+     */
+    private class PreparedWallpaper(val file: File, val bitmap: ImageBitmap, val part: DayPart)
+    private var preparedWallpaper: PreparedWallpaper? = null
+    private var prepareJob: Job? = null
     /**
      * Which picture is up and when it went up (wall-clock ms), kept on disk as well: Android
      * often kills a launcher's process while a big app (a movie) runs, and without this every
@@ -221,37 +230,58 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
      * home after a full interval shows the next picture straight away, and a shorter absence
      * only waits out what's left. (Counting only time on screen meant short, frequent visits
      * home never saw a change.)
+     *
+     * [cameBack] is true when the home screen has just come into view. A change that's due then
+     * shouldn't play the slow fade over the old picture: with the next picture already decoded
+     * (see [prepareNextWallpaper]) it's swapped in before the first frame, and otherwise (the
+     * process was restarted, or it's now another part of the day) it gets a quick fade.
      */
-    fun startWallpaper() {
+    fun startWallpaper(cameBack: Boolean = false) {
         wallpaperWanted = true
+        prepareJob?.cancel()
+        val prepared = preparedWallpaper
+        preparedWallpaper = null
         if (wallpaperJob?.isActive == true) return
+        if (cameBack && prepared != null && _ready.value && wallpaperDue() && prepared.part == dayPart()) {
+            showPrepared(prepared)
+        }
         wallpaperJob = viewModelScope.launch {
+            var fadeMillis = if (cameBack) FADE_QUICK_MS else FADE_SLOW_MS
             // The interval lives in the saved config, which may still be loading on first start.
             _ready.first { it }
-            if (wallpaperFile?.exists() != true && !restoreWallpaper()) showNextWallpaper()
+            if (wallpaperFile?.exists() != true && !restoreWallpaper(fadeMillis)) showNextWallpaper(fadeMillis)
             while (true) {
                 // The picture up may not belong to this part of the day (it just turned evening,
                 // or its times were changed): move on to one that does, without waiting.
                 if (!currentFitsNow()) {
-                    showNextWallpaper()
+                    showNextWallpaper(fadeMillis)
                     markWallpaperChanged()
                 }
-                val seconds = _config.value.wallpaperIntervalSeconds
-                // "Never" keeps the picture, but still follows the time of day.
-                val intervalMs = if (seconds <= 0) Long.MAX_VALUE else seconds.coerceAtLeast(5) * 1000L
+                val intervalMs = wallpaperIntervalMs()
                 // Negative means the clock was set back; treat that as due rather than wait.
                 val sinceChange = System.currentTimeMillis() - wallpaperChangedAt
                 if (sinceChange in 0 until intervalMs) {
+                    fadeMillis = FADE_SLOW_MS
                     // Wake at least every minute to notice the time of day changing.
                     delay(minOf(intervalMs - sinceChange, 60_000L))
                     continue
                 }
-                showNextWallpaper()
+                showNextWallpaper(fadeMillis)
                 // Also when nothing changed (one photo, or it wouldn't decode), so we wait again.
                 markWallpaperChanged()
+                fadeMillis = FADE_SLOW_MS
             }
         }
     }
+
+    /** How long a picture stays up; "Never" keeps it (but it still follows the time of day). */
+    private fun wallpaperIntervalMs(): Long {
+        val seconds = _config.value.wallpaperIntervalSeconds
+        return if (seconds <= 0) Long.MAX_VALUE else seconds.coerceAtLeast(5) * 1000L
+    }
+
+    private fun wallpaperDue(): Boolean =
+        System.currentTimeMillis() - wallpaperChangedAt !in 0 until wallpaperIntervalMs()
 
     /** Morning, day, evening or night right now where the TV is (clock hours without a place). */
     fun dayPart(): DayPart = dayPartNow(_config.value.weatherPlace)
@@ -269,6 +299,35 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     fun stopWallpaper() {
         wallpaperWanted = false
         wallpaperJob?.cancel()
+        prepareNextWallpaper()
+    }
+
+    /**
+     * Decodes the picture that's next, for [startWallpaper] to show at once if it's due when
+     * the home screen comes back. Which picture is next doesn't depend on how long we're away
+     * (a due change always moves one step), only on the part of the day, which is checked then.
+     */
+    private fun prepareNextWallpaper() {
+        prepareJob?.cancel()
+        preparedWallpaper = null
+        if (!_ready.value || wallpaperIntervalMs() == Long.MAX_VALUE) return
+        prepareJob = viewModelScope.launch {
+            val files = withContext(Dispatchers.IO) { wallpapers.list() }
+            val part = dayPart()
+            val next = pickNextWallpaper(wallpaperPool(files, _config.value.photoTimes, part)) ?: return@launch
+            if (next == wallpaperFile) return@launch
+            val bitmap = decodeWallpaper(next) ?: return@launch
+            preparedWallpaper = PreparedWallpaper(next, bitmap, part)
+            Log.i("Wallpaper ${next.name} ready for when we're back")
+        }
+    }
+
+    private fun showPrepared(p: PreparedWallpaper) {
+        wallpaperFile?.let { rememberShown(it) }
+        wallpaperFile = p.file
+        _wallpaper.value = WallpaperFrame(p.bitmap, 0)
+        markWallpaperChanged()
+        Log.i("Wallpaper: ${p.file.name} (decoded while away, shown on return)")
     }
 
     private fun restartWallpaper() {
@@ -280,16 +339,16 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     /** Pictures shown before the current one, newest last, so "previous" works in shuffle too. */
     private val wallpaperHistory = ArrayDeque<File>()
 
-    private suspend fun showNextWallpaper() {
-        val files = withContext(Dispatchers.IO) { wallpapers.list() }
-        if (files.isEmpty()) {
-            wallpaperFile = null
-            _wallpaper.value = null
-            return
-        }
+    private fun rememberShown(file: File) {
+        wallpaperHistory.addLast(file)
+        while (wallpaperHistory.size > 30) wallpaperHistory.removeFirst()
+    }
+
+    /** The picture after the current one in [pool] (a random other one in shuffle), or null if empty. */
+    private fun pickNextWallpaper(pool: List<File>): File? {
+        if (pool.isEmpty()) return null
         val current = wallpaperFile
-        val pool = wallpaperPoolNow(files)
-        val next = if (_config.value.wallpaperShuffle && pool.size > 1) {
+        return if (_config.value.wallpaperShuffle && pool.size > 1) {
             pool.filter { it != current }.random()
         } else {
             // The one after the current picture in name order (the first if there's none yet).
@@ -297,12 +356,20 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             val after = current?.name?.lowercase()
             pool.firstOrNull { after != null && it.name.lowercase() > after } ?: pool.first()
         }
-        if (next == current && _wallpaper.value != null) return
-        if (current != null) {
-            wallpaperHistory.addLast(current)
-            while (wallpaperHistory.size > 30) wallpaperHistory.removeFirst()
+    }
+
+    private suspend fun showNextWallpaper(fadeMillis: Int = FADE_SLOW_MS) {
+        val files = withContext(Dispatchers.IO) { wallpapers.list() }
+        if (files.isEmpty()) {
+            wallpaperFile = null
+            _wallpaper.value = WallpaperFrame(null, fadeMillis)
+            return
         }
-        showWallpaper(next, files.size)
+        val current = wallpaperFile
+        val next = pickNextWallpaper(wallpaperPoolNow(files)) ?: return
+        if (next == current && _wallpaper.value.image != null) return
+        if (current != null) rememberShown(current)
+        showWallpaper(next, files.size, fadeMillis)
     }
 
     private suspend fun showPreviousWallpaper() {
@@ -335,16 +402,21 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         return true
     }
 
-    private suspend fun showWallpaper(next: File, count: Int) {
+    private suspend fun decodeWallpaper(file: File): ImageBitmap? {
         val metrics = getApplication<Application>().resources.displayMetrics
-        val bitmap = withContext(Dispatchers.IO) {
-            runCatching { wallpapers.decode(next, metrics.widthPixels, metrics.heightPixels) }
-                .onFailure { Log.e("Couldn't decode wallpaper ${next.name}", it) }
+        return withContext(Dispatchers.IO) {
+            runCatching { wallpapers.decode(file, metrics.widthPixels, metrics.heightPixels) }
+                .onFailure { Log.e("Couldn't decode wallpaper ${file.name}", it) }
                 .getOrNull()
-        } ?: return
-        Log.i("Wallpaper: ${next.name} ($count in folder)")
+        }
+    }
+
+    private suspend fun showWallpaper(next: File, count: Int, fadeMillis: Int = FADE_SLOW_MS) {
+        val started = android.os.SystemClock.uptimeMillis()
+        val bitmap = decodeWallpaper(next) ?: return
+        Log.i("Wallpaper: ${next.name} ($count in folder, decoded in ${android.os.SystemClock.uptimeMillis() - started} ms, fade $fadeMillis ms)")
         wallpaperFile = next
-        _wallpaper.value = bitmap
+        _wallpaper.value = WallpaperFrame(bitmap, fadeMillis)
         markWallpaperChanged()
     }
 
@@ -354,7 +426,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     /** After a process restart, put back the picture that was up (keeping its timer). */
-    private suspend fun restoreWallpaper(): Boolean {
+    private suspend fun restoreWallpaper(fadeMillis: Int): Boolean {
         val name = wallpaperState.getString("file", null) ?: return false
         val files = withContext(Dispatchers.IO) { wallpapers.list() }
         val file = files.firstOrNull { it.name == name } ?: return false
@@ -366,7 +438,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             Log.i("Wallpaper ${file.name} was due to change while we were gone")
             return true
         }
-        showWallpaper(file, files.size)
+        showWallpaper(file, files.size, fadeMillis)
         if (wallpaperFile != file) return false
         markWallpaperChanged(changedAt)
         Log.i("Wallpaper restored after restart; up for ${(System.currentTimeMillis() - changedAt) / 60_000} min")
@@ -779,3 +851,15 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 }
 
 private const val WEATHER_REFRESH_MS = 30 * 60 * 1000L
+
+/** The normal fade between pictures while the home screen is in view. */
+private const val FADE_SLOW_MS = 2500
+/** Coming back to a change we couldn't get ready in time: quick, so it reads as settling in, not a glitch. */
+private const val FADE_QUICK_MS = 400
+
+/**
+ * The wallpaper to show ([image] null is the built-in sky gradient) and how long to fade it in
+ * over what's there; 0 swaps it at once. A class, not a data class, so showing the same picture
+ * again still counts as a new frame.
+ */
+class WallpaperFrame(val image: ImageBitmap?, val fadeMillis: Int)
